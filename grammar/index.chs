@@ -6,183 +6,513 @@
   the trailing space, including the newline).
 ///
 
-pub []Expr chalkModule =
-  [ Maybe([ Match(comment, "moduleDoc") ]),
-    // This is here to set the location of error of missing moduleDoc.
-    Match(firstSpace),
+// TODO import { Grammar } from regerex;
+type Grammar = (String, []Expr);
+
+let specialChars = CharClass('()[]{}<>,.!@#$%^&*;:\'"\\|/?`~');
+
+let space = Or(
+  [ Repeat(CharClass(' \n\t'), 1) ],
+  [ Before(specialChars) ],
+  [ After(specialChars) ],
+);
+
+export class ChalkScript {
+  Comment moduleDoc;
+  []Import imports;
+  Expressions defs;
+  
+  static rule = [
+    Maybe([ space, Match(Comment, This.moduleDoc) ]),
+    space,
     Repeat(
-      [ Match(importDecl, "imports"), Space() ],
+      [ Match(Import, This.imports), space ],
     ),
-    Match(expressionList, "defs"),
+    Match(Expressions, This.defs, { moduleTop: true }),
+    space,
   ];
+}
 
-pub []Expr firstSpace = [ Space() ];
-
-pub []Expr comment =
-  [ Or(
-      [ Match(singlelineComment, "comment") ],
-      [ Match(multilineComment, "comment") ],
+export class Comment {
+  SinglelineComment|MultilineComment comment;
+  
+  static rule = [
+    Or(
+      [ Match(SinglelineComment, This.comment) ],
+      [ Match(MultilineComment, This.comment) ],
     ),
   ];
+}
 
-pub []Expr singlelineComment =
-  [ Text("//"),
+export class SinglelineComment {
+  ChalkDoc content;
+  
+  static rule = [
+    Text('//'),
     And(
-      [ Not(Text("/")) ],
-      [ Space(), Match(singlelineDoc, "chalkDoc") ],
+      [ CharClass('', '\n/'), Repeat([ CharClass('', '\n') ]) ],
+      [ space, Match(ChalkDoc, This.chalkDoc), space, ],
     ),
-    Space("\n"),
-  ];
+    Text('\n'),
+  ],
+}
 
-pub []Expr multilineComment =
-  [ Text("///"),
-    Space(),
-    Match(multilineDoc, "chalkDoc") ])
-    Space()
-    Text("///")
-  ];
+export class MultilineComment {
+  ChalkDoc content;
+  
+  static rule = [
+    Text('///'),
+    space,
+    Match(MultilineDoc, This.chalkDoc),
+    space,
+    Text('///'),
+  ],
+}
 
-pub []Expr importDecl =
-  [ Text("import")
-  , Space()
-  , Or(
-      [ Match(identifier, "imports", { type: IdentifierType.upperCase }) ],
-      [ Match(objectLit, "imports",
-          { type: Destructuring.Typed.never }
-        )
+class Import {
+  ValueStruct value;
+  StringLiteral path;
+  
+  static rule = [
+    Text('import'),
+    space,
+    Match(ValueStruct, This.value, { restricted: true }),
+    space,
+    Text('from'),
+    space,
+    Match(StringLiteral, This.path, { singleQuotes: true }),
+    space,
+    Text(";"),
+  ],
+}
+
+export class Expressions {
+  Bool topLevel;
+  Bool moduleTop;
+  QMarkOp|Export expr;
+  
+  static rule = [
+    Repeat(
+      [ Or(
+          [ Match(QMarkOp, { moduleTop: This.moduleTop, semicolonRequired: true }), space, Text(';') ],
+          [ Match(QMarkOp, { moduleTop: This.moduleTop, semicolonRequired: false }),
+            Or(
+              [ space, Text(';') ],
+              [ After([ space, Text('\n'), space, Text('\n') ]) ]
+            ),
+          ],
+          [ Equals(This.moduleTop, true), Match(Export, This.expr) ],
+        ),
       ],
-    )
-  , Space()
-  , Text("from")
-  , Space()
-  , Match(stringLit, "path")
-  , Space()
-  , Text(";")
+    ),
+    space,
+    Or(
+      [ Match(QMarkOp, { moduleTop: This.moduleTop, semicolonRequired: true }),
+        Equal(This.moduleTop, true, [ space, Text(';') ], [ Maybe([ space, Text(';') ]) ]),
+      ],
+      [ Match(QMarkOp, { moduleTop: This.moduleTop, semicolonRequired: false }),
+        Maybe([ space, Text(';') ]),
+      ],
+    ),
+  ],
+}
+
+export class Export {
+  ValueStruct value;
+  StringLiteral path;
+  
+  static rule = [
+    Text('export'),
+    space,
+    Match(ValueStruct, This.value),
+    space,
+    Text('from'),
+    space,
+    Match(StringLiteral, This.path),
+    space,
+    Text(';'),
   ];
+}
 
-pub []Expr identifier = [ Or([ Match(lIdentifier) ], [ Match(uIdentifier) ]) ];
+export class QMarkOp {
+  Bool moduleTop;
+  Bool rightmost;
+  Bool semicolonRequired;
+  
+  ?OrOp cond;
+  ?QMarkOp then;
+  ?QMarkOp else;
+  
+  ?CondOr next;
+  
+  static rules = [
+    Or(
+      [ Equal({ semicolonRequired: true }),
+        Match(OrOp, This.cond, { moduleTop: false, rightmost: false }),
+        space,
+        Text('?'),
+        space,
+        Match(QMarkOp, This.then, { moduleTop: false, rightmost: true }),
+        space,
+        Text(':'),
+        space,
+        Match(QMarkOp, This.else, { moduleTop: false, rightmost: true }),
+      ],
+      [ Match(CondOp, This.next,
+          { semicolonRequired: This.semicolonRequired,
+            moduleTop: This.moduleTop,
+            rightmost: This.rightmost,
+          },
+        ),
+      ],
+    ),
+  ];
+}
 
-pub []Expr lIdentifier = [ Text.az, Match(identifierRest) ];
-pub []Expr uIdentifier = [ Text.AZ, Match(identifierRest) ];
+export final trait OpEnum : Enum {
+  // Distinct for all instances.
+  String op where All OpEnum a, OpEnum b: a.op == b.op -> a == b;
+  
+  This(String);
+  
+  static enum Cond : OpEnum {
+    or('||');
+    and('&&');
+    
+    String op;
+    
+    This(_op);
+  }
+  
+  static enum Or : OpEnum {
+    or('|');
+    
+    String op;
+    
+    This(_op);
+  }
 
-pub []Expr identifierRest = [ Repeat(Or([ Text.az ], [ Text.AZ ], [ Text.dg ])) ];
+  static enum And : OpEnum {
+    and('&');
+    
+    String op;
+    
+    This(_op);
+  }
+
+  static enum Order : OpEnum {
+    lt('<');
+    le('<=');
+    eq('==');
+    ne('!=');
+    ge('>=');
+    gt('>');
+    
+    String op;
+    
+    This(_op);
+  }
+
+  static class Is : OpEnum {
+    is('is');
+    
+    String op;
+    
+    This(_op);
+  }
+
+  static enum Spaceship : OpEnum {
+    cmp('<=>');
+    
+    String op;
+    
+    This(_op);
+  }
+
+  static enum Magma : OpEnum {
+    pp('++');
+    
+    String op;
+    
+    This(_op);
+  }
+}
+
+trait OpFlags {
+  Bool moduleTop;
+  Bool rightmost;
+  Bool semicolonRequired;
+}
+
+class Operator[
+  type Op : OpEnum,
+  type Left : OpFlags,
+  type Right: OpFlags,
+  type Next : OpFlags,
+] : OpFlags {
+  Op op;
+  Bool moduleTop;
+  Bool rightmost;
+  Bool semicolonRequired;
+  
+  ?Left left;
+  ?Right right;
+  ?Next next
+  
+  static rules = [
+    Or(
+      [ Match(Left, This.left, { moduleTop: false, rightmost: false }),
+        space,
+        Or(
+          ...Op.values.map(v => [ Equal(This.op, v.op), Text(v.op) ]),
+        ),
+        space,
+        Match(Right, This.right, { moduleTop: false, rightmost: This.rightmost }),
+      ],
+      [ Match(Next, This.next,
+          { semicolonRequired: This.semicolonRequired,
+            moduleTop: This.moduleTop,
+            rightmost: This.rightmost,
+          },
+        ),
+      ],
+    ),
+  ];
+}
+
+export class CondOp = Operator[OpEnum.Cond, OrOp, CondOp, OrOp],
+export class OrOp = Operator[OpEnum.Or, AndOp, OrOp, AndOp],
+export class AndOp = Operator[OpEnum.And, OrderOrIsOp, AndOp, OrderOrIsOp],
+
+export class OrderOrIs: OpFlags {
+  Bool moduleTop;
+  Bool rightmost;
+  Bool semicolonRequired;
+  
+  OrderOp|IsOs op;
+  
+  static rules = [
+    Or(
+      Match(OrderOp, This.op,
+        { moduleTop: This.moduleTop,
+          rightmost: This.rightmost,
+          semicolonRequired: This.semicolonRequired,
+        },
+      ),
+      Match(IsOp, This.op,
+        { moduleTop: This.moduleTop,
+          rightmost: This.rightmost,
+          semicolonRequired: This.semicolonRequired,
+        },
+      ),
+    ),
+  ];
+}
+
+export class OrderOp : OpFlags {
+  Bool moduleTop;
+  Bool rightmost;
+  Bool semicolonRequired;
+  
+  []SpaceshipOp ops;
+  
+  static rules = [
+    Or(
+      [ Repeat(
+          [ Match(SpaceshipOp, This.ops, { moduleTop: false, rightmost: false }),
+            space,
+            Or(
+              ...OpEnum.Order.values.map(v => [ Equal(This.op, v.op), Text(v.op) ]),
+            ),
+            space,
+          ],
+        ),
+        Match(SpaceshipOp, This.ops, { moduleTop: false, rightmost: This.rightmost }),
+      ],
+      [ Match(SpaceshipOp, This.ops,
+          { moduleTop: This.moduleTop, rightmost: This.rightmost },
+        ),
+      ],
+    ),
+  ];
+}
+
+export class IsOp = Operator[OpEnum.Is, SpaceshipOp, SpaceshipOp, SpaceshipOp];
+export class SpaceshipOp = Operator[OpEnum.Spaceship, MagmaOp, MagmaOp, MagmaOp];
+export class MagmaOp = Operator[OpEnum.Magma, ModOp, MagmaOp, ModOp];
+export class ModOp = Operator[OpEnum.Mod, AddOp, ModOp, AddOp];
+export class MulOp = Operator[OpEnum.Mul, MulOp, AddOp, MulOp];
+export class PowOp = Operator[OpEnum.Pow, PowOp, MulOp, PowOp];
+export class ElvisOp = Operator[OpEnum.Elvis, UnaryLeftOp, ElvisOp, UnaryLeftOp];
+
+// TODO 'continue' keyword, asdf
+enum UnaryLeftEnum {
+  ret('return');
+  bre('break');
+  ign('ignore');
+  awa('await');
+  now('nowait');
+  neg('!');
+  
+  String str;
+  
+  This(_str);
+}
+
+export class UnaryLeftOp {
+  
+}
+
+export class ValueStruct',
+    { Bool restricted },
+    [ Or(
+        [ Match('UIdentifier', 'value') ],
+        [ Match('Object', 'value',
+            { type: Destructuring.Typed.never },
+          ),
+        ],
+      ),
+    ],
+  ),
+  ( 'Identifier',
+    [ Or(
+        [ Match('LIdentifier') ],
+        [ Match('UIdentifier') ],
+      ),
+    ],
+  ),
+  ( 'LIdentifier',
+    [ And(
+        [ Not(keywords) ]
+        [ Grammar.asciiAzLower, Repeat([ Grammar.asciiAlphaNum ]) ],
+      ),
+    ],
+  ),
+  ( 'UIdentifier',
+    [ And(
+        [ Not(keywords) ]
+        [ Grammar.asciiAzUpper, Repeat([ Grammar.asciiAlphaNum ]) ],
+      ),
+    ],
+  ),
+];
 
 pub []Expr expressionList =
   [ Repeat(
       [ Or(
-          [ Match(expressionSC, "expr", { rightmost: tt, top: tt }),
+          [ Match(expressionSC, 'expr', { rightmost: tt, top: tt }),
             Space,
             Text(";"),
           ],
-          [ Match(expressionCB, "expr", { rightmost: tt, top: tt }) ],
+          [ Match(expressionCB, 'expr', { rightmost: tt, top: tt }) ],
         ),
       ],
     ),
     Or(
-      [ Match(expressionSC, "expr", { rightmost: tt }),
+      [ Match(expressionSC, 'expr', { rightmost: tt }),
         Maybe(
           Space,
           Text(";"),
         ),
       ],
-      [ Match(expressionCB, "expr", { rightmost: tt }) ],
+      [ Match(expressionCB, 'expr', { rightmost: tt }) ],
     ),
   ];
 
 pub []Expr expression =
   [ Or(
-      [ Match(expressionSC, "expr", { rightmost: "rightmost" }) ],
-      [ Match(expressionCB, "expr", { rightmost: "rightmost" }) ],
+      [ Match(expressionSC, 'expr', { rightmost: 'rightmost' }) ],
+      [ Match(expressionCB, 'expr', { rightmost: 'rightmost' }) ],
     )
   ];
 
 // An expression that, if child of a block, must end with a semicolon.
 pub []Expr expressionSC =
   [ Or(
-      [ Match(conditionalOp, "expr", { rightmost: "rightmost" }) ],
-      [ Match(elvisOp, "expr", { rightmost: "rightmost" }) ],
-      [ Match(fnDef, "fnDef") ],
-      [ Match(classDef, "classDef") ],
-      [ Match(traitDef, "traitDef") ],
+      [ Match(conditionalOp, 'expr', { rightmost: 'rightmost' }) ],
+      [ Match(elvisOp, 'expr', { rightmost: 'rightmost' }) ],
+      [ Match(fnDef, 'fnDef') ],
+      [ Match(classDef, 'classDef') ],
+      [ Match(traitDef, 'traitDef') ],
     ),
   ];
 
 pub []Expr conditionalOp =
   [ Or(
-      [ Match(orOp, "cond", { rightmost: ff }),
-        Space(),
+      [ Match(orOp, 'cond', { rightmost: ff }),
+        space,
         Text("?"),
-        Space(),
-        Match(expression, "then", { rightmost: tt }),
-        Space(),
+        space,
+        Match(expression, 'then', { rightmost: tt }),
+        space,
         Text(":"),
-        Space(),
-        Match(conditionalOp, "else", { rightmost: "rightmost" }),
+        space,
+        Match(conditionalOp, 'else', { rightmost: 'rightmost' }),
       ],
-      [ Match(orOp, "expr", { rightmost: "rightmost" }) ],
+      [ Match(orOp, 'expr', { rightmost: 'rightmost' }) ],
     ),
   ];
 
 pub []Expr elvisOp =
   [ Or(
-      [ Match(orOp, "left", { rightmost: ff }),
-        Space(),
+      [ Match(orOp, 'left', { rightmost: ff }),
+        space,
         Text("?:"),
-        Space(),
-        Match(elvisOp, "then", { rightmost: "rightmost" }),
+        space,
+        Match(elvisOp, 'then', { rightmost: 'rightmost' }),
       ],
-      [ Match(orOp, "expr", { rightmost: "rightmost" }) ],
+      [ Match(orOp, 'expr', { rightmost: 'rightmost' }) ],
     ),
   ];
 
 pub []Expr orOp =
   [ Or(
-      [ Match(andOp, "left", { rightmost: ff }),
-        Space(),
+      [ Match(andOp, 'left', { rightmost: ff }),
+        space,
         Text("||"),
-        Space(),
-        Match(orOp, "rigt", { rightmost: "rightmost" }),
+        space,
+        Match(orOp, 'rigt', { rightmost: 'rightmost' }),
       ],
-      [ Match(andOp, "expr", { rightmost: "rightmost" }) ],
+      [ Match(andOp, 'expr', { rightmost: 'rightmost' }) ],
     ),
   ];
 
 pub []Expr andOp =
   [ Or(
-      [ Match(compareOp, "left", { rightmost: ff }),
-        Space(),
+      [ Match(compareOp, 'left', { rightmost: ff }),
+        space,
         Text("&&"),
-        Space(),
-        Match(andOp, "rigt", { rightmost: "rightmost" }),
+        space,
+        Match(andOp, 'rigt', { rightmost: 'rightmost' }),
       ],
-      [ Match(compareOp, "expr", { rightmost: "rightmost" }) ],
+      [ Match(compareOp, 'expr', { rightmost: 'rightmost' }) ],
     ),
   ];
 
 pub []Expr compareOp =
   [ Or(
       [ Repeat(
-          [ [ Match(spaceshipOp, "cmp", { rightmost: ff }),
-              Space(),
+          [ [ Match(spaceshipOp, 'cmp', { rightmost: ff }),
+              space,
               Or(
-                [ Match(compareLt, "op") ],
-                [ Match(compareLts, "op") ],
-                [ Match(compareGt, "op") ],
-                [ Match(compareGts, "op") ],
-                [ Match(compareEq, "op") ],
-                [ Match(compareDt, "op") ],
+                [ Match(compareLt, 'op') ],
+                [ Match(compareLts, 'op') ],
+                [ Match(compareGt, 'op') ],
+                [ Match(compareGts, 'op') ],
+                [ Match(compareEq, 'op') ],
+                [ Match(compareDt, 'op') ],
               ),
             ],
           ],
           1,
           null,
         ),
-        Space(),
-        Match(spaceshipOp, "cmp", { rightmost: "rightmost" }),
-        Space(),
+        space,
+        Match(spaceshipOp, 'cmp', { rightmost: 'rightmost' }),
+        space,
         ),
       ],
-      [ Match(spaceshipOp, "expr", { rightmost: "rightmost" }) ],
+      [ Match(spaceshipOp, 'expr', { rightmost: 'rightmost' }) ],
     )
   ];
 
@@ -195,54 +525,54 @@ pub []Expr compareDt = [ Text("!=") ];
 
 pub []Expr spaceshipOp =
   [ Or(
-      [ Match(monoidOp, "left", { rightmost: ff }),
-        Space(),
+      [ Match(monoidOp, 'left', { rightmost: ff }),
+        space,
         Text("<=>"),
-        Space(),
-        Match(monoidOp, "rigt", { rightmost: "rightmost" }),
+        space,
+        Match(monoidOp, 'rigt', { rightmost: 'rightmost' }),
       ],
-      [ Match(monoidOp, "expr", { rightmost: "rightmost" }) ],
+      [ Match(monoidOp, 'expr', { rightmost: 'rightmost' }) ],
     ),
   ];
 
 pub []Expr monoidOp =
   [ Or(
-      [ Match(moduloOp, "left", { rightmost: ff }),
-        Space(),
+      [ Match(moduloOp, 'left', { rightmost: ff }),
+        space,
         Text("++"),
-        Space(),
-        Match(monoidOp, "rigt", { rightmost: "rightmost" }),
+        space,
+        Match(monoidOp, 'rigt', { rightmost: 'rightmost' }),
       ],
-      [ Match(moduloOp, "expr", { rightmost: "rightmost" }) ],
+      [ Match(moduloOp, 'expr', { rightmost: 'rightmost' }) ],
     ),
   ];
 
 pub []Expr moduloOp =
   [ Or(
-      [ Match(addSubOp, "left", { rightmost: ff }),
-        Space(),
+      [ Match(addSubOp, 'left', { rightmost: ff }),
+        space,
         Text("%"),
-        Space(),
-        Match(addSubOp, "rigt", { rightmost: "rightmost" }),
+        space,
+        Match(addSubOp, 'rigt', { rightmost: 'rightmost' }),
       ],
-      [ Match(addSubOp, "expr", { rightmost: "rightmost" }) ],
+      [ Match(addSubOp, 'expr', { rightmost: 'rightmost' }) ],
     ),
   ];
 
 pub []Expr addSubOp =
   [ Or(
-      [ Match(mulDivOp, "left", { rightmost: ff }),
-        Space(),
+      [ Match(mulDivOp, 'left', { rightmost: ff }),
+        space,
         Or(
-          [ Match(addSubAdd, "op") ],
-          [ Match(addSubSub, "op") ],
-          [ Match(addSubAddMod, "op") ],
-          [ Match(addSubSubMod, "op") ],
+          [ Match(addSubAdd, 'op') ],
+          [ Match(addSubSub, 'op') ],
+          [ Match(addSubAddMod, 'op') ],
+          [ Match(addSubSubMod, 'op') ],
         ),
-        Space(),
-        Match(addSubOp, "rigt", { rightmost: "rightmost" }),
+        space,
+        Match(addSubOp, 'rigt', { rightmost: 'rightmost' }),
       ],
-      [ Match(mulDivOp, "expr", { rightmost: "rightmost" }) ],
+      [ Match(mulDivOp, 'expr', { rightmost: 'rightmost' }) ],
     ),
   ];
 
@@ -253,17 +583,17 @@ pub []Expr addSubSubMod = [ Text("-%") ];
 
 pub []Expr mulDivOp =
   [ Or(
-      [ Match(powOp, "left", { rightmost: ff }),
-        Space(),
+      [ Match(powOp, 'left', { rightmost: ff }),
+        space,
         Or(
-          [ Match(mulDivMul, "op") ],
-          [ Match(mulDivDiv, "op") ],
-          [ Match(mulDivMulMod, "op") ],
+          [ Match(mulDivMul, 'op') ],
+          [ Match(mulDivDiv, 'op') ],
+          [ Match(mulDivMulMod, 'op') ],
         ),
-        Space(),
-        Match(mulDivOp, "rigt", { rightmost: "rightmost" }),
+        space,
+        Match(mulDivOp, 'rigt', { rightmost: 'rightmost' }),
       ],
-      [ Match(powOp, "expr", { rightmost: "rightmost" }) ],
+      [ Match(powOp, 'expr', { rightmost: 'rightmost' }) ],
     ),
   ];
 
@@ -273,72 +603,72 @@ pub []Expr mulDivMod = [ Text("*%") ];
 
 pub []Expr powOp =
   [ Or(
-      [ Match(unaryLeftOp, "left", { rightmost: ff }),
-        Space(),
+      [ Match(unaryLeftOp, 'left', { rightmost: ff }),
+        space,
         Text("**"),
-        Space(),
-        Match(unaryLeftOp, "rigt", { rightmost: "rightmost" }),
+        space,
+        Match(unaryLeftOp, 'rigt', { rightmost: 'rightmost' }),
       ],
-      [ Match(unaryLeftOp, "expr") ],
-      [ Match(true, "rightmost"), Match(extraExpr, "expr") ],
+      [ Match(unaryLeftOp, 'expr') ],
+      [ Match(true, 'rightmost'), Match(extraExpr, 'expr') ],
     ),
   ];
 
 pub []Expr extraExpr =
   [ Or(
-      [ Match(returnExpr, "expr") ],
-      [ Match(breakExpr, "expr") ],
-      [ Match(comptimeExpr, "expr") ],
-      [ Match(constExpr, "expr") ],
-      [ Match(assignOp, "expr") ],
+      [ Match(returnExpr, 'expr') ],
+      [ Match(breakExpr, 'expr') ],
+      [ Match(comptimeExpr, 'expr') ],
+      [ Match(constExpr, 'expr') ],
+      [ Match(assignOp, 'expr') ],
     ),
   ];
 
 pub []Expr returnExpr =
-  [ Text("return"),
+  [ Text('return'),
     Match(namedControlFlow),
     Maybe(
-      Space(),
-      Match(expression, "expr", { rightmost: tt })
+      space,
+      Match(expression, 'expr', { rightmost: tt })
     ),
   ];
 
 pub []Expr breakExpr =
-  [ Text("break"),
+  [ Text('break'),
     Match(namedControlFlow),
     Maybe(
-      Space(),
-      Match(expression, "expr", { rightmost: tt }),
+      space,
+      Match(expression, 'expr', { rightmost: tt }),
     ),
   ];
 
-pub []Expr namedControlFlow = [ Text("-"), Match(lIdentifier, "name") ];
+pub []Expr namedControlFlow = [ Text("-"), Match(lIdentifier, 'name') ];
 
 pub []Expr comptimeExpr =
-  [ Text("comptime"),
-    Space(),
-    Match(expression, "expr", { rightmost: tt }),
+  [ Text('comptime'),
+    space,
+    Match(expression, 'expr', { rightmost: tt }),
   ];
 
 pub []Expr constExpr =
-  [ Text("const"), Space(),
-    Match(expression, "expr", { rightmost: tt }),
+  [ Text('const'), space,
+    Match(expression, 'expr', { rightmost: tt }),
   ];
 
 pub []Expr assignOp =
-  [ Match(unaryRightOp, "left"),
-    Space(),
+  [ Match(unaryRightOp, 'left'),
+    space,
     Or(
-      [ Match(asgn, "op") ],
-      [ Match(asgnAdd, "op") ],
-      [ Match(asgnSub, "op") ],
-      [ Match(asgnMul, "op") ],
-      [ Match(asgnDiv, "op") ],
-      [ Match(asgnMod, "op") ],
-      [ Match(asgnPow, "op") ],
+      [ Match(asgn, 'op') ],
+      [ Match(asgnAdd, 'op') ],
+      [ Match(asgnSub, 'op') ],
+      [ Match(asgnMul, 'op') ],
+      [ Match(asgnDiv, 'op') ],
+      [ Match(asgnMod, 'op') ],
+      [ Match(asgnPow, 'op') ],
     ),
-    Space(),
-    Match(expression, "rigt", { rightmost: tt }),
+    space,
+    Match(expression, 'rigt', { rightmost: tt }),
   ];
 
 pub []Expr asgn = [ Text("=") ];
@@ -357,43 +687,43 @@ pub []Expr unaryLeftOp =
           [ Match(unaryLeftIgnore) ],
           [ Match(unaryLeftNegation) ],
         ),
-        Space(),
-        Match(unaryLeftOp, "sub"),
+        space,
+        Match(unaryLeftOp, 'sub'),
       ],
-      [ Match(unaryRightOp, "sub") ],
+      [ Match(unaryRightOp, 'sub') ],
     ),
   ];
 
-pub []Expr unaryLeftAwait = [ Text("await") ];
-pub []Expr unaryLeftAwait = [ Text("nowait") ];
-pub []Expr unaryLeftAwait = [ Text("ignore") ];
+pub []Expr unaryLeftAwait = [ Text('await') ];
+pub []Expr unaryLeftAwait = [ Text('nowait') ];
+pub []Expr unaryLeftAwait = [ Text('ignore') ];
 pub []Expr unaryLeftAwait = [ Text("!") ];
 
 // asdf
 
 pub []Expr unaryRightOp =
   [ Or(
-      [ Match(unaryRightOp, "sub"),
-        Space(),
+      [ Match(unaryRightOp, 'sub'),
+        space,
         Or(
-          [ Match(memberAccess, "op"), Match(lIdentifier) ],
-          [ Match(index, "op"), Match(expression, "index"), Text("]") ],
+          [ Match(memberAccess, 'op'), Match(lIdentifier) ],
+          [ Match(index, 'op'), Match(expression, 'index'), Text("]") ],
         ),
       ],
-      [ Match(lIdentifier, "lIdentifier") ],
-      [ Match(type, "type") ],
-      [ Match(fnCall, "fnCall") ],
-      [ Match(blockExpr, "blockExpr") ],
-      [ Match(switchExpr, "switchExpr") ],
-      [ Match(forExpr, "forExpr") ],
-      [ Match(continueExpr, "continueExpr") ],
-      [ Match(numberLit, "numberLit") ],
-      [ Match(stringLit, "stringLit") ],
-      [ Match(varDef, "varDef") ],
-      [ Match(arrayLit, "arrayLit") ],
-      [ Match(tupleLit, "tupleLit") ],
-      [ Match(objectLit, "objectLit") ],
-      [ Match(setLit, "setLit") ],
+      [ Match(lIdentifier, 'lIdentifier') ],
+      [ Match(type, 'type') ],
+      [ Match(fnCall, 'fnCall') ],
+      [ Match(blockExpr, 'blockExpr') ],
+      [ Match(switchExpr, 'switchExpr') ],
+      [ Match(forExpr, 'forExpr') ],
+      [ Match(continueExpr, 'continueExpr') ],
+      [ Match(numberLit, 'numberLit') ],
+      [ Match(stringLit, 'stringLit') ],
+      [ Match(varDef, 'varDef') ],
+      [ Match(arrayLit, 'arrayLit') ],
+      [ Match(tupleLit, 'tupleLit') ],
+      [ Match(objectLit, 'objectLit') ],
+      [ Match(setLit, 'setLit') ],
     ),
   ];
 
@@ -402,12 +732,12 @@ pub []Expr index = [ Text("[") ];
 
 pub []Expr type = [ Text("[") ];
 
-pub []Expr continueExpr = [ Text("continue"), Match(namedControlFlow) ];
+pub []Expr continueExpr = [ Text('continue'), Match(namedControlFlow) ];
 
 // An definition that ends with a curly brace and must not end with a semicolon.
 pub []Expr expressionCB =
   [ Or(
-      [ Match(fnDef, "expr") ],
+      [ Match(fnDef, 'expr') ],
     )
   ];
 
@@ -415,49 +745,49 @@ pub []Expr expressionCB =
 pub []Expr definitions =
   [ Repeat(
       [ Or(
-          [ Match(objectDestructuring, "definitions"
+          [ Match(objectDestructuring, 'definitions'
               { typed: Destructuring.Typed.never }
             )
-          , Space("")
+          , Space('')
           , Text(";")
           ],
-          [ Match(variableDefinition, "definitions")
-          , Space("")
+          [ Match(variableDefinition, 'definitions')
+          , Space('')
           , Text(";")
           ],
-          [ Match(classDefinition, "definitions", ) ],
-          [ Match(traitDefinition, "definitions", ) ],
-          [ Match(functionDefinition, "definitions") ],
+          [ Match(classDefinition, 'definitions', ) ],
+          [ Match(traitDefinition, 'definitions', ) ],
+          [ Match(functionDefinition, 'definitions') ],
         )
       ],
       Space("\n"),
-      StartSpace(),
+      Startspace,
       Space("\n"),
     )
   ];
 
 pub []Expr variableDefinition =
-    [ Match(type, "type")
+    [ Match(type, 'type')
     , Space(" ")
-    , Match(identifier, "name")
+    , Match(identifier, 'name')
     , Or(
-        [ [ Space(" "), Text("="), MSpace(" ", 4, [ Match(expression, "init") ]) ]
-        , [ Equals("init", null) ]
+        [ [ Space(" "), Text("="), MSpace(" ", 4, [ Match(expression, 'init') ]) ]
+        , [ Equals('init', null) ]
         ]
       );
     ];
 }
 
 pub []Expr classDefinition =
-    [ Text("class")
+    [ Text('class')
     , Space(" ")
-    , Match(uIdentifier, "name")
+    , Match(uIdentifier, 'name')
     , Maybe(
-        [ Space("")
+        [ Space('')
         , Text("<")
-        , Space("")
+        , Space('')
         , Repeat(
-            [ Match(parameter, "params") ],
+            [ Match(parameter, 'params') ],
             [ Text(","), MSpace(" ", 6) ]
           )
         , Text(">")
@@ -467,14 +797,14 @@ pub []Expr classDefinition =
         [ Space(" ")
         , Text(":")
         , Space(" ")
-        , Repeat([ Match(Identifier, "extends") ], [ Text(","), Space("\n") ])
+        , Repeat([ Match(Identifier, 'extends') ], [ Text(","), Space("\n") ])
         ]
       )
     , Maybe(
         [ Space(" ")
-        , Text("friend")
+        , Text('friend')
         , Space(" ")
-        , Repeat([ Match(Identifier, "friends") ], [ Text(","), Space("\n") ])
+        , Repeat([ Match(Identifier, 'friends') ], [ Text(","), Space("\n") ])
         ]
       )
     , Space(" ")
@@ -483,14 +813,14 @@ pub []Expr classDefinition =
         [ Repeat(
             [ StartSpace()
             , Or(
-                [ Match(classDefinition, "members") ],
-                [ Match(traitDefinition, "members") ],
-                [ Match(functionDefinition, "members") ],
-                [ Match(variableDefinition, "members") ],
-                [ Match(destructuringDefinition, "members") ],
+                [ Match(classDefinition, 'members') ],
+                [ Match(traitDefinition, 'members') ],
+                [ Match(functionDefinition, 'members') ],
+                [ Match(variableDefinition, 'members') ],
+                [ Match(destructuringDefinition, 'members') ],
               )
             ],
-            [ Space("\n"), StartSpace(), Space("\n") ],
+            [ Space("\n"), Startspace, Space("\n") ],
           )
         ]
       )
@@ -501,15 +831,15 @@ pub []Expr classDefinition =
 }
 
 pub []Expr traitDefinition =
-    [ Text("trait")
+    [ Text('trait')
     , Space(" ")
-    , Match(uIdentifier, "name")
+    , Match(uIdentifier, 'name')
     , Maybe(
-        [ Space("")
+        [ Space('')
         , Text("<")
-        , Space("")
+        , Space('')
         , Repeat(
-            [ Match(parameter, "params") ],
+            [ Match(parameter, 'params') ],
             [ Text(","), MSpace(" ", 6) ]
           )
         , Text(">")
@@ -519,14 +849,14 @@ pub []Expr traitDefinition =
         [ Space(" ")
         , Text(":")
         , Space(" ")
-        , Repeat([ Match(Identifier, "extends") ], [ Text(","), Space("\n") ])
+        , Repeat([ Match(Identifier, 'extends') ], [ Text(","), Space("\n") ])
         ]
       )
     , Maybe(
         [ Space(" ")
-        , Text("friend")
+        , Text('friend')
         , Space(" ")
-        , Repeat([ Match(Identifier, "friends") ], [ Text(","), Space("\n") ])
+        , Repeat([ Match(Identifier, 'friends') ], [ Text(","), Space("\n") ])
         ]
       )
     , Space(" ")
@@ -535,13 +865,13 @@ pub []Expr traitDefinition =
         [ Repeat(
             [ StartSpace()
             , Or(
-                [ Match(classDefinition, "members") ],
-                [ Match(traitDefinition, "members") ],
-                [ Match(functionDefinition, "members") ],
-                [ Match(functionDeclaration, "declarations") ],
+                [ Match(classDefinition, 'members') ],
+                [ Match(traitDefinition, 'members') ],
+                [ Match(functionDefinition, 'members') ],
+                [ Match(functionDeclaration, 'declarations') ],
               )
             ],
-            [ Space("\n"), StartSpace(), Space("\n") ],
+            [ Space("\n"), Startspace, Space("\n") ],
           )
         ]
       )
@@ -551,10 +881,10 @@ pub []Expr traitDefinition =
     ];
 
 pub []Expr functionSignature =
-    [ Match(type, "returnType")
+    [ Match(type, 'returnType')
     , Text("(")
     , Releat(
-        [ Match(parameter, "params") ],
+        [ Match(parameter, 'params') ],
         [ Text(","), Space(" ") ],
       )
     , Text(")")
@@ -563,13 +893,13 @@ pub []Expr functionSignature =
 pub []Expr functionDefinition =
     [ Match(functionSignature)
     , Or(
-        [ Text("=>"), Match(expression, "body") ],
-        [ Match(block, "body") ],
+        [ Text("=>"), Match(expression, 'body') ],
+        [ Match(block, 'body') ],
       )
     ];
 
 pub []Expr functionDeclaration =
-    [ Match(functionSignature), Space(""), Text(";") ];
+    [ Match(functionSignature), Space(''), Text(";") ];
 
 pub []Expr typeUnion = [ Match(typeUTerm), Text("|"), Match(typeUTerm) ];
 
@@ -593,7 +923,7 @@ pub []Expr identifier =
       OneOf(
         [ [ Equals(Identifier::iType, Type.ctt,
               [ OneOf(
-                  [ [ Text("class") ], [ Text("trait") ], [ Text("type") ] ]
+                  [ [ Text('class') ], [ Text('trait') ], [ Text('type') ] ]
                 )
               ],
             )
@@ -614,31 +944,3 @@ pub []Expr typedIdentifier =
       , Match(TypedIdentifier::type, [ (Identifier::isType, TODO) ])
       ];
 }
-
-pub []Expr type =
-    [
-    ];
-
-// Both generic and function parameter
-pub []Expr parameter =
-    [
-    ];
-
-pub []Expr objectDestructuring =
-    [
-    ];
-
-pub []Expr arrayDestructuring =
-    [
-    ];
-
-pub []Expr stringLit =
-
-// First part of variable declaration
-pub []Expr type =
-    [
-    ];
-
-pub []Expr todo =
-    [
-    ];

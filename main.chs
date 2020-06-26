@@ -1,21 +1,31 @@
 /// Main file.
 
 enum Language {
-  functionalChalk("chf");
-  chalkScript("chs");
-  chalkPP("chpp");
-  chalkDoc("chdoc");
+  ///
+    TODO Functional Chalk needs a name that is one word (for seo/to avoid confusion).
+    
+    PureChalk? ChalkImt? Or something else entirely?
+  ///
+  functionalChalk('Functional Chalk', 'chf');
+  chalkScript('ChalkScript', 'chs');
+  chalkPP('Chalk++', 'chpp');
+  chalkDoc('ChalkDoc', 'chdoc');
   
+  String name;
   String abbr;
   String extension;
   
-  new(_abbr) : extension('.' ++ abbr) {}
+  This(_name, _abbr) : extension('.' ++ abbr) {}
   
   ?Language byAbbr(?String ext) {
     return Language.values.find(lang => lang.extension == abbr);
   }
   
   ?Language byExtension(?String ext) {
+    return Language.values.find(lang => lang.extension == ext);
+  }
+  
+  ?Language byName(?String ext) {
     return Language.values.find(lang => lang.extension == ext);
   }
 }
@@ -25,10 +35,10 @@ class ModulePath {
   
   String path;
   
-  new(String path) {}
+  This(String path) {}
 }
 
-pub class Program {
+export class Program {
   Promise<String>(String path) loader
   
   Map<ModulePath, Module>
@@ -52,23 +62,23 @@ pub class Program {
   pub Debugger getDebugger(String expression = "Main()") {}
 }
 
-class Debugger {
+export class Debugger {
   imt Program program;
   
-  cst Resources resources;
+  let Resources resources;
   
   // Stores destructed data to enable stepping back.
-  Buffer trashBuffer;
+  Buffer trash;
   
-  int maxTrashSize;
+  Int64 maxTrashSize;
   
-  new(_program, _resources) {
+  This(_program, _resources) {
     
   }
   
-  stepIn();
+  step();
   
-  stepInBack();
+  stepBack();
   
   stepOver();
   
